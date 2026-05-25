@@ -1,5 +1,5 @@
 [project]
-name = "parakeet"
+name = "parakeet-ja-sub"
 version = "0.1.0"
 description = "Transcribe Japanese audio from MP4 videos using NVIDIA Parakeet TDT 0.6B JA"
 readme = "README.md"
