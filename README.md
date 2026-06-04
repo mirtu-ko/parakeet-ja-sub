@@ -22,7 +22,7 @@
 
 1. **克隆仓库**:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/mirtu-ko/parakeet-ja-sub.git
    cd Parakeet
    ```
 
@@ -72,7 +72,7 @@ uv run parakeet-translate path/to/subtitle.srt
 ## 技术栈
 
 - **ASR**: NVIDIA Parakeet TDT 0.6B JA (via NeMo)
-- **Translation**: Google Gemini 2.5 Flash Lite
+- **Translation**: Google Gemini Flash Lite
 - **Tools**: `pysrt`, `nemo_toolkit`, `ffmpeg`, `uv`
 
 ## 许可证
