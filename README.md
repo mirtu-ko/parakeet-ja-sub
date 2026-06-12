@@ -1,10 +1,10 @@
 # Parakeet Subtitle Transcriber & Translator
 
-这是一个基于 NVIDIA Parakeet TDT 0.6B JA 模型开发的日语语音转字幕工具，并集成了 Google Gemini API 进行高质量的中文字幕翻译。
+这是一个基于 Parakeet 日语模型开发的语音转字幕工具，并集成了 Google Gemini API 进行高质量的中文字幕翻译。
 
 ## 功能特点
 
-- **高精度识别**：使用 NVIDIA Parakeet TDT 模型，专为日语优化。
+- **高精度识别**：默认使用日语优化的 Parakeet 模型；在 Apple Silicon 上优先走 MLX 后端。
 - **自动切片**：支持长视频/音频自动切片处理，避免显存溢出或处理超时。
 - **智能合并**：自动合并相邻且内容重叠的字幕片段。
 - **Gemini 翻译**：自动将生成的日语字幕翻译成自然、流畅的简体中文。
@@ -47,6 +47,7 @@ uv run parakeet path/to/video.mp4
 ```
 - 执行后将生成 `video.srt` (日语) 和 `video.cn.srt` (中文)。
 - 你可以使用 `-o` 指定输出路径，或使用 `--chunk-seconds` 调整切片长度。
+- Apple Silicon 默认会使用 `mlx-community/parakeet-tdt_ctc-0.6b-ja`，其他平台默认使用 `nvidia/parakeet-tdt_ctc-0.6b-ja`。
 
 ### 2. 仅翻译：对已有字幕进行翻译
 
@@ -64,14 +65,24 @@ uv run parakeet-translate path/to/subtitle.srt
 - `-o`, `--output`: 输出 SRT 路径（可选）。
 - `--chunk-seconds`: 切片时长，默认 20 秒。
 - `--chunk-overlap-seconds`: 切片重叠时长，默认 2 秒。
+- `--asr-model`: 指定 ASR 模型；也可通过 `PARAKEET_ASR_MODEL` 环境变量覆盖默认值。
 
 ### `parakeet-translate` (仅翻译)
 - `input`: 输入 SRT 路径（必填）。
 - `-o`, `--output`: 输出中文字幕路径（可选）。
 
+## 模型后端
+
+- Apple Silicon: 默认使用 `parakeet-mlx` 加载 `mlx-community/parakeet-tdt_ctc-0.6b-ja`
+- 其他平台: 默认使用 NeMo 加载 `nvidia/parakeet-tdt_ctc-0.6b-ja`
+- 你也可以手动切换：
+  ```bash
+  uv run parakeet path/to/video.mp4 --asr-model mlx-community/parakeet-tdt_ctc-0.6b-ja
+  ```
+
 ## 技术栈
 
-- **ASR**: NVIDIA Parakeet TDT 0.6B JA (via NeMo)
+- **ASR**: Parakeet JA (via MLX on Apple Silicon, NeMo elsewhere)
 - **Translation**: Google Gemini Flash Lite
 - **Tools**: `pysrt`, `nemo_toolkit`, `ffmpeg`, `uv`
 

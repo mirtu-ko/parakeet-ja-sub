@@ -1,6 +1,7 @@
 import argparse
 import html
 import os
+import platform
 import re
 import subprocess
 import tempfile
@@ -20,10 +21,14 @@ load_dotenv()
 DEFAULT_CHUNK_SECONDS = 20
 DEFAULT_CHUNK_OVERLAP_SECONDS = 2
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_TRANSLATION_BATCH_SIZE = 30
+DEFAULT_TRANSLATION_BATCH_SIZE = 20
 DEFAULT_TRANSLATION_INTERVAL_SECONDS = 1.0
 DEFAULT_TRANSLATION_RETRIES = 2
-DEFAULT_ASR_MODEL = "nvidia/parakeet-tdt_ctc-0.6b-ja"
+DEFAULT_NEMO_ASR_MODEL = "nvidia/parakeet-tdt_ctc-0.6b-ja"
+DEFAULT_MLX_ASR_MODEL = "mlx-community/parakeet-tdt_ctc-0.6b-ja"
+DEFAULT_ASR_MODEL = (
+    DEFAULT_MLX_ASR_MODEL if platform.system() == "Darwin" and platform.machine() == "arm64" else DEFAULT_NEMO_ASR_MODEL
+)
 MERGE_GAP_SECONDS = 0.3
 AUDIO_CODEC = "pcm_s16le"
 AUDIO_SAMPLE_RATE = "16000"
@@ -194,29 +199,80 @@ def merge_adjacent_segments(
     return merged
 
 
-def transcribe(
+def is_apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def is_mlx_asr_model(model_name: str) -> bool:
+    return model_name.startswith("mlx-community/")
+
+
+def get_asr_model_name(model_name: str | None = None) -> str:
+    return model_name or os.getenv("PARAKEET_ASR_MODEL") or DEFAULT_ASR_MODEL
+
+
+def transcribe_with_mlx(
+    audio_path: Path,
+    model_name: str,
+    chunk_seconds: float,
+    chunk_overlap_seconds: float,
+) -> list[SubtitleSegment]:
+    if not is_apple_silicon():
+        raise RuntimeError("MLX ASR models currently require Apple Silicon (macOS arm64).")
+
+    try:
+        from parakeet_mlx import from_pretrained
+    except ImportError as e:
+        raise RuntimeError(
+            "parakeet-mlx is not installed. Run `uv sync` on Apple Silicon to install the MLX backend."
+        ) from e
+
+    print("Apple Silicon detected, using MLX ASR backend")
+    asr_model = from_pretrained(model_name)
+    result = asr_model.transcribe(
+        audio_path,
+        chunk_duration=chunk_seconds if chunk_seconds > 0 else None,
+        overlap_duration=chunk_overlap_seconds,
+    )
+
+    segments: list[SubtitleSegment] = []
+    for sentence in result.sentences:
+        text = sentence.text.strip()
+        if not text:
+            continue
+        segments.append({
+            "start": float(sentence.start),
+            "end": float(sentence.end),
+            "text": text,
+        })
+
+    return merge_adjacent_segments(segments)
+
+
+def transcribe_with_nemo(
     audio_path: Path,
     tmp_dir: Path,
-    chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
-    chunk_overlap_seconds: float = DEFAULT_CHUNK_OVERLAP_SECONDS,
+    model_name: str,
+    chunk_seconds: float,
+    chunk_overlap_seconds: float,
 ) -> list[SubtitleSegment]:
+    if is_mlx_asr_model(model_name):
+        raise RuntimeError("MLX models must be loaded with the MLX backend, not NeMo.")
+
     import nemo.collections.asr as nemo_asr
     import torch
     from nemo.collections.asr.parts.mixins import TranscribeConfig
 
-    # 1. 检查并设置设备
-
-    # Apple Silicon 支持 mps 加速，Intel 芯片则使用 cpu
+    # Apple Silicon supports MPS; other machines fall back to CPU.
     if torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("✨ 检测到 Apple Silicon，使用 MPS 硬件加速")
+        print("Apple Silicon detected, using MPS acceleration")
     else:
         device = torch.device("cpu")
-        print("💻 使用 CPU 运行")
+        print("Using CPU for NeMo transcription")
 
-    asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=DEFAULT_ASR_MODEL)
+    asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=model_name)
 
-    # 将模型移至指定设备并设为评估模式
     asr_model = asr_model.to(device)  # type: ignore
     asr_model.eval()
 
@@ -266,6 +322,19 @@ def transcribe(
                 })
 
     return merge_adjacent_segments(all_segments)
+
+
+def transcribe(
+    audio_path: Path,
+    tmp_dir: Path,
+    model_name: str,
+    chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
+    chunk_overlap_seconds: float = DEFAULT_CHUNK_OVERLAP_SECONDS,
+) -> list[SubtitleSegment]:
+    if is_mlx_asr_model(model_name):
+        return transcribe_with_mlx(audio_path, model_name, chunk_seconds, chunk_overlap_seconds)
+
+    return transcribe_with_nemo(audio_path, tmp_dir, model_name, chunk_seconds, chunk_overlap_seconds)
 
 
 def group_chars_into_segments(
@@ -337,14 +406,75 @@ def default_chinese_srt_path(srt_path: Path) -> Path:
     return srt_path.with_name(f"{srt_path.name}.translated.srt")
 
 
+def get_response_field(value: object, field_name: str) -> object | None:
+    if isinstance(value, dict):
+        return value.get(field_name)
+    return getattr(value, field_name, None)
+
+
+def get_response_items(value: object, field_name: str) -> list[object]:
+    items = get_response_field(value, field_name)
+    if items is None:
+        return []
+    if isinstance(items, list | tuple):
+        return list(items)
+    return [items]
+
+
+def summarize_response_value(value: object, max_length: int = 200) -> str:
+    text = str(value).replace("\n", " ").strip()
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 3]}..."
+
+
+def extract_response_text(response: object) -> str | None:
+    response_text = get_response_field(response, "text")
+    if isinstance(response_text, str) and response_text.strip():
+        return response_text.strip()
+
+    texts: list[str] = []
+    for candidate in get_response_items(response, "candidates"):
+        content = get_response_field(candidate, "content")
+        for part in get_response_items(content, "parts"):
+            part_text = get_response_field(part, "text")
+            if isinstance(part_text, str) and part_text.strip():
+                texts.append(part_text.strip())
+
+    if not texts:
+        return None
+    return "\n".join(texts).strip()
+
+
+def describe_empty_translation_response(response: object) -> str:
+    details: list[str] = []
+
+    finish_reasons = [
+        summarize_response_value(reason)
+        for candidate in get_response_items(response, "candidates")
+        for reason in [get_response_field(candidate, "finish_reason") or get_response_field(candidate, "finishReason")]
+        if reason is not None
+    ]
+    if finish_reasons:
+        details.append(f"finish_reason={', '.join(finish_reasons)}")
+
+    prompt_feedback = get_response_field(response, "prompt_feedback") or get_response_field(response, "promptFeedback")
+    if prompt_feedback is not None:
+        details.append(f"prompt_feedback={summarize_response_value(prompt_feedback)}")
+
+    if not details:
+        return "no text parts or candidates were returned"
+    return "; ".join(details)
+
+
 def generate_translation(client: genai.Client, model_name: str, prompt: str) -> str:
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
     )
-    text = response.text
+    text = extract_response_text(response)
     if text is None:
-        raise RuntimeError("Gemini returned an empty response")
+        raise RuntimeError(f"Gemini returned an empty response ({describe_empty_translation_response(response)})")
     return text.strip()
 
 
@@ -399,6 +529,19 @@ def wait_between_requests(previous_request_time: float | None, interval_seconds:
         time.sleep(wait_seconds)
 
 
+def should_split_translation_batch(error: Exception) -> bool:
+    message = str(error).lower()
+    split_markers = [
+        "empty response",
+        "different shape",
+        "finish_reason",
+        "prompt_feedback",
+        "safety",
+        "blocked",
+    ]
+    return any(marker in message for marker in split_markers)
+
+
 def translate_batch(
     client: genai.Client,
     model_name: str,
@@ -437,6 +580,52 @@ def translate_batch(
     raise RuntimeError(f"Translation batch failed after {retries + 1} attempt(s): {last_error}")
 
 
+def translate_batch_with_fallback(
+    client: genai.Client,
+    model_name: str,
+    texts: list[str],
+    previous_request_time: float | None,
+    request_interval_seconds: float,
+    retries: int,
+) -> tuple[list[str], float]:
+    try:
+        return translate_batch(
+            client,
+            model_name,
+            texts,
+            previous_request_time,
+            request_interval_seconds,
+            retries,
+        )
+    except Exception as e:
+        if len(texts) > 1 and should_split_translation_batch(e):
+            split_at = len(texts) // 2
+            print(f"    Batch of {len(texts)} lines still failed; retrying as {split_at} + {len(texts) - split_at}...")
+            left_translations, previous_request_time = translate_batch_with_fallback(
+                client,
+                model_name,
+                texts[:split_at],
+                previous_request_time,
+                request_interval_seconds,
+                retries,
+            )
+            right_translations, previous_request_time = translate_batch_with_fallback(
+                client,
+                model_name,
+                texts[split_at:],
+                previous_request_time,
+                request_interval_seconds,
+                retries,
+            )
+            return left_translations + right_translations, previous_request_time
+
+        if len(texts) == 1 and should_split_translation_batch(e):
+            print(f"    Warning: keeping original line after Gemini failure: {e}")
+            return [texts[0]], time.monotonic()
+
+        raise
+
+
 def translate_subtitles(
     input_path: Path,
     output_path: Path,
@@ -469,7 +658,7 @@ def translate_subtitles(
         print(f"  Translating batch {batch_number}/{batch_count} ({len(batch)} lines)...")
 
         try:
-            translated_lines, previous_request_time = translate_batch(
+            translated_lines, previous_request_time = translate_batch_with_fallback(
                 client,
                 model_name,
                 texts,
@@ -515,6 +704,11 @@ def main():
         help=f"Overlap between chunks in seconds (default: {DEFAULT_CHUNK_OVERLAP_SECONDS})",
     )
     parser.add_argument(
+        "--asr-model",
+        default=None,
+        help=f"ASR model to use (default: PARAKEET_ASR_MODEL or {DEFAULT_ASR_MODEL})",
+    )
+    parser.add_argument(
         "--translation-model",
         default=None,
         help=f"Gemini model for Chinese translation (default: GEMINI_MODEL or {DEFAULT_GEMINI_MODEL})",
@@ -542,6 +736,7 @@ def main():
     if args.chunk_overlap_seconds >= args.chunk_seconds:
         raise SystemExit("--chunk-overlap-seconds must be smaller than --chunk-seconds")
 
+    asr_model_name = get_asr_model_name(args.asr_model)
     output_path = args.output or default_japanese_srt_path(args.input)
     audio_path = args.input.with_suffix(".wav")
 
@@ -553,10 +748,11 @@ def main():
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         print(f"Using temporary directory: {tmp_dir}")
-        print(f"Transcribing with {DEFAULT_ASR_MODEL}...")
+        print(f"Transcribing with {asr_model_name}...")
         segments = transcribe(
             audio_path,
             Path(tmp_dir),
+            asr_model_name,
             chunk_seconds=args.chunk_seconds,
             chunk_overlap_seconds=args.chunk_overlap_seconds,
         )

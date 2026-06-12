@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai>=2.6.0",
+    "parakeet-mlx; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "nemo_toolkit[asr]",
     "pysrt",
     "python-dotenv>=1.2.2",
