@@ -1,5 +1,6 @@
 import argparse
 import html
+import math
 import os
 import platform
 import re
@@ -21,7 +22,7 @@ load_dotenv()
 DEFAULT_CHUNK_SECONDS = 20
 DEFAULT_CHUNK_OVERLAP_SECONDS = 2
 DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_TRANSLATION_BATCH_SIZE = 20
+DEFAULT_TRANSLATION_BATCH_SIZE = 50
 DEFAULT_TRANSLATION_INTERVAL_SECONDS = 1.0
 DEFAULT_TRANSLATION_RETRIES = 2
 DEFAULT_NEMO_ASR_MODEL = "nvidia/parakeet-tdt_ctc-0.6b-ja"
@@ -30,9 +31,15 @@ DEFAULT_ASR_MODEL = (
     DEFAULT_MLX_ASR_MODEL if platform.system() == "Darwin" and platform.machine() == "arm64" else DEFAULT_NEMO_ASR_MODEL
 )
 MERGE_GAP_SECONDS = 0.3
+DEFAULT_MAX_SEGMENT_DURATION_SECONDS = 20.0
+DEFAULT_MAX_SEGMENT_CHARS = 45
+DEFAULT_SEGMENT_SILENCE_GAP_SECONDS = 0.8
+MIN_SPLIT_SEGMENT_CHARS = 4
 AUDIO_CODEC = "pcm_s16le"
 AUDIO_SAMPLE_RATE = "16000"
 AUDIO_CHANNELS = "1"
+HARD_BREAK_CHARS = "。．.!！?？\n"
+SOFT_BREAK_CHARS = "、，,；;：: "
 
 
 class SubtitleSegment(TypedDict):
@@ -199,6 +206,123 @@ def merge_adjacent_segments(
     return merged
 
 
+def choose_split_index(text: str, start: int, ideal_end: int, max_end: int) -> int:
+    ideal_end = min(len(text), max(start + 1, ideal_end))
+    max_end = min(len(text), max(start + 1, max_end))
+    if max_end >= len(text):
+        return len(text)
+
+    for break_chars in (HARD_BREAK_CHARS, SOFT_BREAK_CHARS):
+        for idx in range(ideal_end, start, -1):
+            if text[idx - 1] in break_chars:
+                return idx
+        for idx in range(ideal_end + 1, min(len(text), max_end + 1)):
+            if text[idx - 1] in break_chars:
+                return idx
+
+    return ideal_end
+
+
+def split_text_for_subtitles(text: str, max_chars: int, target_parts: int) -> list[str]:
+    clean_text = text.strip()
+    if not clean_text:
+        return []
+    target_parts = min(len(clean_text), max(1, target_parts))
+    if len(clean_text) <= max_chars and target_parts <= 1:
+        return [clean_text]
+
+    parts: list[str] = []
+    start = 0
+    remaining_parts = target_parts
+    while start < len(clean_text):
+        remaining_chars = len(clean_text) - start
+        if remaining_parts <= 1 or remaining_chars <= 1:
+            parts.append(clean_text[start:].strip())
+            break
+
+        max_chunk_chars = min(max_chars, remaining_chars - (remaining_parts - 1))
+        soft_limit = max(1, min(max_chunk_chars, math.ceil(remaining_chars / remaining_parts)))
+        split_idx = choose_split_index(
+            clean_text,
+            start,
+            start + soft_limit,
+            start + max_chunk_chars,
+        )
+        if split_idx <= start:
+            split_idx = min(len(clean_text), start + max_chunk_chars)
+
+        part = clean_text[start:split_idx].strip()
+        if not part:
+            split_idx = min(len(clean_text), start + max_chunk_chars)
+            part = clean_text[start:split_idx].strip()
+
+        parts.append(part)
+        start = split_idx
+        remaining_parts = max(1, remaining_parts - 1)
+
+    return [part for part in parts if part]
+
+
+def split_long_segment(segment: SubtitleSegment, max_duration: float, max_chars: int) -> list[SubtitleSegment]:
+    text = segment["text"].strip()
+    duration = segment["end"] - segment["start"]
+    if not text:
+        return []
+    if duration <= max_duration and len(text) <= max_chars:
+        return [segment]
+
+    target_parts = max(
+        math.ceil(duration / max_duration) if max_duration > 0 else 1,
+        math.ceil(len(text) / max_chars) if max_chars > 0 else 1,
+    )
+    target_parts = min(target_parts, max(1, len(text) // MIN_SPLIT_SEGMENT_CHARS))
+    parts = split_text_for_subtitles(text, max_chars=max_chars, target_parts=target_parts)
+    if len(parts) <= 1:
+        return [segment]
+
+    total_chars = sum(len(part) for part in parts)
+    if total_chars <= 0 or duration <= 0:
+        part_duration = duration / len(parts) if parts else 0.0
+        return [
+            {
+                "start": segment["start"] + (idx * part_duration),
+                "end": segment["start"] + ((idx + 1) * part_duration),
+                "text": part,
+            }
+            for idx, part in enumerate(parts)
+        ]
+
+    split_segments: list[SubtitleSegment] = []
+    current_start = segment["start"]
+    consumed_chars = 0
+    for idx, part in enumerate(parts):
+        consumed_chars += len(part)
+        if idx == len(parts) - 1:
+            current_end = segment["end"]
+        else:
+            current_end = segment["start"] + (duration * consumed_chars / total_chars)
+        split_segments.append({
+            "start": current_start,
+            "end": current_end,
+            "text": part,
+        })
+        current_start = current_end
+
+    return split_segments
+
+
+def normalize_segments(
+    segments: list[SubtitleSegment],
+    max_segment_duration: float,
+    max_segment_chars: int,
+) -> list[SubtitleSegment]:
+    merged_segments = merge_adjacent_segments(segments)
+    normalized_segments: list[SubtitleSegment] = []
+    for segment in merged_segments:
+        normalized_segments.extend(split_long_segment(segment, max_segment_duration, max_segment_chars))
+    return normalized_segments
+
+
 def is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
@@ -216,6 +340,8 @@ def transcribe_with_mlx(
     model_name: str,
     chunk_seconds: float,
     chunk_overlap_seconds: float,
+    max_segment_duration: float,
+    max_segment_chars: int,
 ) -> list[SubtitleSegment]:
     if not is_apple_silicon():
         raise RuntimeError("MLX ASR models currently require Apple Silicon (macOS arm64).")
@@ -246,7 +372,7 @@ def transcribe_with_mlx(
             "text": text,
         })
 
-    return merge_adjacent_segments(segments)
+    return normalize_segments(segments, max_segment_duration, max_segment_chars)
 
 
 def transcribe_with_nemo(
@@ -255,6 +381,9 @@ def transcribe_with_nemo(
     model_name: str,
     chunk_seconds: float,
     chunk_overlap_seconds: float,
+    max_segment_duration: float,
+    max_segment_chars: int,
+    segment_silence_gap_seconds: float,
 ) -> list[SubtitleSegment]:
     if is_mlx_asr_model(model_name):
         raise RuntimeError("MLX models must be loaded with the MLX backend, not NeMo.")
@@ -300,7 +429,13 @@ def transcribe_with_nemo(
             ts = hypothesis.timestamp
             if ts and ts.get("char"):
                 chars = ts["char"]
-                for seg in group_chars_into_segments(chars, chunk.start):
+                for seg in group_chars_into_segments(
+                    chars,
+                    chunk.start,
+                    max_duration=max_segment_duration,
+                    max_chars=max_segment_chars,
+                    silence_gap_seconds=segment_silence_gap_seconds,
+                ):
                     kept_seg = keep_segment_in_window(seg, chunk.keep_start, chunk.keep_end)
                     if kept_seg is not None:
                         all_segments.append(kept_seg)
@@ -321,7 +456,7 @@ def transcribe_with_nemo(
                     "text": hypothesis.text,
                 })
 
-    return merge_adjacent_segments(all_segments)
+    return normalize_segments(all_segments, max_segment_duration, max_segment_chars)
 
 
 def transcribe(
@@ -330,15 +465,38 @@ def transcribe(
     model_name: str,
     chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
     chunk_overlap_seconds: float = DEFAULT_CHUNK_OVERLAP_SECONDS,
+    max_segment_duration: float = DEFAULT_MAX_SEGMENT_DURATION_SECONDS,
+    max_segment_chars: int = DEFAULT_MAX_SEGMENT_CHARS,
+    segment_silence_gap_seconds: float = DEFAULT_SEGMENT_SILENCE_GAP_SECONDS,
 ) -> list[SubtitleSegment]:
     if is_mlx_asr_model(model_name):
-        return transcribe_with_mlx(audio_path, model_name, chunk_seconds, chunk_overlap_seconds)
+        return transcribe_with_mlx(
+            audio_path,
+            model_name,
+            chunk_seconds,
+            chunk_overlap_seconds,
+            max_segment_duration,
+            max_segment_chars,
+        )
 
-    return transcribe_with_nemo(audio_path, tmp_dir, model_name, chunk_seconds, chunk_overlap_seconds)
+    return transcribe_with_nemo(
+        audio_path,
+        tmp_dir,
+        model_name,
+        chunk_seconds,
+        chunk_overlap_seconds,
+        max_segment_duration,
+        max_segment_chars,
+        segment_silence_gap_seconds,
+    )
 
 
 def group_chars_into_segments(
-    chars: list[dict], time_offset: float = 0.0, max_duration: float = 5.0, max_chars: int = 40
+    chars: list[dict],
+    time_offset: float = 0.0,
+    max_duration: float = DEFAULT_MAX_SEGMENT_DURATION_SECONDS,
+    max_chars: int = DEFAULT_MAX_SEGMENT_CHARS,
+    silence_gap_seconds: float = DEFAULT_SEGMENT_SILENCE_GAP_SECONDS,
 ) -> list[SubtitleSegment]:
     segments: list[SubtitleSegment] = []
     current_text = ""
@@ -357,7 +515,8 @@ def group_chars_into_segments(
             continue
 
         duration = item_end - current_start
-        if duration > max_duration or len(current_text) + len(text) > max_chars:
+        silence_gap = item_start - current_end
+        if silence_gap >= silence_gap_seconds or duration > max_duration or len(current_text) + len(text) > max_chars:
             segments.append({
                 "start": current_start + time_offset,
                 "end": current_end + time_offset,
@@ -645,7 +804,7 @@ def translate_subtitles(
     model_name = get_gemini_model_name(model_name)
     client = genai.Client(api_key=api_key, http_options={"api_version": "v1"})
 
-    subs = pysrt.open(input_path, encoding="utf-8")
+    subs = pysrt.open(str(input_path), encoding="utf-8")
     print(f"Translating {len(subs)} segments to Chinese with {model_name}...")
 
     failed_batches = 0
@@ -704,6 +863,27 @@ def main():
         help=f"Overlap between chunks in seconds (default: {DEFAULT_CHUNK_OVERLAP_SECONDS})",
     )
     parser.add_argument(
+        "--max-segment-duration-seconds",
+        type=float,
+        default=DEFAULT_MAX_SEGMENT_DURATION_SECONDS,
+        help=f"Maximum subtitle segment duration after post-processing (default: {DEFAULT_MAX_SEGMENT_DURATION_SECONDS})",
+    )
+    parser.add_argument(
+        "--max-segment-chars",
+        type=int,
+        default=DEFAULT_MAX_SEGMENT_CHARS,
+        help=f"Maximum subtitle characters per segment after post-processing (default: {DEFAULT_MAX_SEGMENT_CHARS})",
+    )
+    parser.add_argument(
+        "--segment-silence-gap-seconds",
+        type=float,
+        default=DEFAULT_SEGMENT_SILENCE_GAP_SECONDS,
+        help=(
+            "Split subtitle segments when silence exceeds this threshold "
+            f"and char timestamps are available (default: {DEFAULT_SEGMENT_SILENCE_GAP_SECONDS})"
+        ),
+    )
+    parser.add_argument(
         "--asr-model",
         default=None,
         help=f"ASR model to use (default: PARAKEET_ASR_MODEL or {DEFAULT_ASR_MODEL})",
@@ -735,6 +915,12 @@ def main():
         raise SystemExit("--chunk-overlap-seconds must be 0 or greater")
     if args.chunk_overlap_seconds >= args.chunk_seconds:
         raise SystemExit("--chunk-overlap-seconds must be smaller than --chunk-seconds")
+    if args.max_segment_duration_seconds <= 0:
+        raise SystemExit("--max-segment-duration-seconds must be greater than 0")
+    if args.max_segment_chars <= 0:
+        raise SystemExit("--max-segment-chars must be greater than 0")
+    if args.segment_silence_gap_seconds < 0:
+        raise SystemExit("--segment-silence-gap-seconds must be 0 or greater")
 
     asr_model_name = get_asr_model_name(args.asr_model)
     output_path = args.output or default_japanese_srt_path(args.input)
@@ -755,6 +941,9 @@ def main():
             asr_model_name,
             chunk_seconds=args.chunk_seconds,
             chunk_overlap_seconds=args.chunk_overlap_seconds,
+            max_segment_duration=args.max_segment_duration_seconds,
+            max_segment_chars=args.max_segment_chars,
+            segment_silence_gap_seconds=args.segment_silence_gap_seconds,
         )
 
     print(f"Writing {len(segments)} subtitle segments to {output_path}")

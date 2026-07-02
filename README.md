@@ -6,7 +6,7 @@
 
 - **高精度识别**：默认使用日语优化的 Parakeet 模型；在 Apple Silicon 上优先走 MLX 后端。
 - **自动切片**：支持长视频/音频自动切片处理，避免显存溢出或处理超时。
-- **智能合并**：自动合并相邻且内容重叠的字幕片段。
+- **更稳的字幕分段**：在有字符级时间戳时支持按静音停顿切分，并对过长字幕按标点、时长、字数自动拆分。
 - **Gemini 翻译**：自动将生成的日语字幕翻译成自然、流畅的简体中文。
 - **独立工具**：提供独立的命令行工具，可对已有的 SRT 文件进行翻译。
 
@@ -48,6 +48,14 @@ uv run parakeet path/to/video.mp4
 - 执行后将生成 `video.srt` (日语) 和 `video.cn.srt` (中文)。
 - 你可以使用 `-o` 指定输出路径，或使用 `--chunk-seconds` 调整切片长度。
 - Apple Silicon 默认会使用 `mlx-community/parakeet-tdt_ctc-0.6b-ja`，其他平台默认使用 `nvidia/parakeet-tdt_ctc-0.6b-ja`。
+- 如果偶尔出现“一大段几分钟都没切开”，可以这样收紧分段：
+  ```bash
+  uv run parakeet path/to/video.mp4 \
+    --chunk-seconds 15 \
+    --max-segment-duration-seconds 6 \
+    --max-segment-chars 30 \
+    --segment-silence-gap-seconds 0.5
+  ```
 
 ### 2. 仅翻译：对已有字幕进行翻译
 
@@ -65,6 +73,9 @@ uv run parakeet-translate path/to/subtitle.srt
 - `-o`, `--output`: 输出 SRT 路径（可选）。
 - `--chunk-seconds`: 切片时长，默认 20 秒。
 - `--chunk-overlap-seconds`: 切片重叠时长，默认 2 秒。
+- `--max-segment-duration-seconds`: 单条字幕最大时长，默认 20 秒。
+- `--max-segment-chars`: 单条字幕最大字数，默认 45。
+- `--segment-silence-gap-seconds`: 在有字符级时间戳时，静音超过这个阈值就切段，默认 0.8 秒。
 - `--asr-model`: 指定 ASR 模型；也可通过 `PARAKEET_ASR_MODEL` 环境变量覆盖默认值。
 
 ### `parakeet-translate` (仅翻译)
