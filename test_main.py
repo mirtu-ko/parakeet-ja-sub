@@ -1,7 +1,8 @@
 import unittest
 from pathlib import Path
+from sys import modules
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from main import (
@@ -11,6 +12,7 @@ from main import (
     merge_adjacent_segments,
     normalize_segments,
     split_audio,
+    transcribe_with_mlx,
     translate_batch_with_fallback,
 )
 
@@ -58,6 +60,17 @@ class GroupCharsIntoSegmentsTests(unittest.TestCase):
 
 
 class SegmentNormalizationTests(unittest.TestCase):
+    def test_attaches_delayed_punctuation_without_extending_subtitle_duration(self):
+        segments = [
+            {"start": 2716.56, "end": 2718.48, "text": "またいっぱい気持ちよくなろう"},
+            {"start": 2723.2, "end": 2723.52, "text": "。"},
+        ]
+
+        self.assertEqual(
+            merge_adjacent_segments(segments),
+            [{"start": 2716.56, "end": 2718.48, "text": "またいっぱい気持ちよくなろう。"}],
+        )
+
     def test_does_not_merge_repeated_text_across_long_gap(self):
         segments = [
             {"start": 1.0, "end": 1.5, "text": "はい"},
@@ -117,6 +130,36 @@ class TranslationFallbackTests(unittest.TestCase):
     def test_single_line_failure_is_not_silently_kept_as_japanese(self, _translate_batch):
         with self.assertRaisesRegex(RuntimeError, "could not translate"):
             translate_batch_with_fallback(object(), "model", ["原文"], None, 0.0, 0)
+
+
+class MlxTranscriptionTests(unittest.TestCase):
+    def test_passes_sentence_timing_limits_to_mlx(self):
+        captured: dict[str, object] = {}
+
+        class SentenceConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class DecodingConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class FakeModel:
+            def transcribe(self, _audio_path, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(sentences=[])
+
+        fake_module = ModuleType("parakeet_mlx")
+        fake_module.DecodingConfig = DecodingConfig
+        fake_module.SentenceConfig = SentenceConfig
+        fake_module.from_pretrained = lambda _model_name: FakeModel()
+
+        with patch.dict(modules, {"parakeet_mlx": fake_module}), patch("main.is_apple_silicon", return_value=True):
+            transcribe_with_mlx(Path("audio.wav"), "mlx-community/model", 20.0, 2.0, 8.0, 45, 0.8)
+
+        decoding_config = captured["decoding_config"]
+        self.assertEqual(decoding_config.sentence.silence_gap, 0.8)
+        self.assertEqual(decoding_config.sentence.max_duration, 8.0)
 
 
 if __name__ == "__main__":

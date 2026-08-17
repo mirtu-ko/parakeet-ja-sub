@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 import time
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,6 +177,11 @@ def keep_segment_in_window(segment: SubtitleSegment, keep_start: float, keep_end
     return None
 
 
+def is_punctuation_only(text: str) -> bool:
+    compact_text = "".join(text.split())
+    return bool(compact_text) and all(unicodedata.category(char).startswith("P") for char in compact_text)
+
+
 def merge_adjacent_segments(
     segments: list[SubtitleSegment], merge_gap_seconds: float = MERGE_GAP_SECONDS
 ) -> list[SubtitleSegment]:
@@ -190,6 +196,12 @@ def merge_adjacent_segments(
         prev_text = prev["text"].strip()
         current_text = segment["text"].strip()
         gap = segment["start"] - prev["end"]
+
+        if prev_text and is_punctuation_only(current_text):
+            prev["text"] = f"{prev_text}{current_text}"
+            if gap <= merge_gap_seconds:
+                prev["end"] = max(prev["end"], segment["end"])
+            continue
 
         if gap <= merge_gap_seconds and current_text == prev_text:
             prev["end"] = max(prev["end"], segment["end"])
@@ -371,12 +383,13 @@ def transcribe_with_mlx(
     chunk_overlap_seconds: float,
     max_segment_duration: float,
     max_segment_chars: int,
+    segment_silence_gap_seconds: float,
 ) -> list[SubtitleSegment]:
     if not is_apple_silicon():
         raise RuntimeError("MLX ASR models currently require Apple Silicon (macOS arm64).")
 
     try:
-        from parakeet_mlx import from_pretrained
+        from parakeet_mlx import DecodingConfig, SentenceConfig, from_pretrained
     except ImportError as e:
         raise RuntimeError(
             "parakeet-mlx is not installed. Run `uv sync` on Apple Silicon to install the MLX backend."
@@ -386,6 +399,12 @@ def transcribe_with_mlx(
     asr_model = from_pretrained(model_name)
     result = asr_model.transcribe(
         audio_path,
+        decoding_config=DecodingConfig(
+            sentence=SentenceConfig(
+                silence_gap=segment_silence_gap_seconds,
+                max_duration=max_segment_duration,
+            )
+        ),
         chunk_duration=chunk_seconds if chunk_seconds > 0 else None,
         overlap_duration=chunk_overlap_seconds,
     )
@@ -500,6 +519,7 @@ def transcribe(
             chunk_overlap_seconds,
             max_segment_duration,
             max_segment_chars,
+            segment_silence_gap_seconds,
         )
 
     return transcribe_with_nemo(
