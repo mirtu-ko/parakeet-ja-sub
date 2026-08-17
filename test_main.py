@@ -131,7 +131,14 @@ class TranslationFallbackTests(unittest.TestCase):
     @patch("main.translate_batch", side_effect=ValueError("different shape"))
     def test_single_line_failure_is_not_silently_kept_as_japanese(self, _translate_batch):
         with self.assertRaisesRegex(RuntimeError, "could not translate"):
-            translate_batch_with_fallback(object(), "model", ["原文"], None, 0.0, 0)
+            translate_batch_with_fallback(
+                cast(Any, object()),
+                "model",
+                ["原文"],
+                None,
+                0.0,
+                0,
+            )
 
 
 class MlxTranscriptionTests(unittest.TestCase):
