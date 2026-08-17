@@ -3,9 +3,11 @@ from pathlib import Path
 from sys import modules
 from tempfile import TemporaryDirectory
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 from main import (
+    SubtitleSegment,
     filter_chars_to_window,
     get_hypothesis_timestamps,
     group_chars_into_segments,
@@ -61,7 +63,7 @@ class GroupCharsIntoSegmentsTests(unittest.TestCase):
 
 class SegmentNormalizationTests(unittest.TestCase):
     def test_attaches_delayed_punctuation_without_extending_subtitle_duration(self):
-        segments = [
+        segments: list[SubtitleSegment] = [
             {"start": 2716.56, "end": 2718.48, "text": "またいっぱい気持ちよくなろう"},
             {"start": 2723.2, "end": 2723.52, "text": "。"},
         ]
@@ -72,7 +74,7 @@ class SegmentNormalizationTests(unittest.TestCase):
         )
 
     def test_does_not_merge_repeated_text_across_long_gap(self):
-        segments = [
+        segments: list[SubtitleSegment] = [
             {"start": 1.0, "end": 1.5, "text": "はい"},
             {"start": 60.0, "end": 60.5, "text": "はい"},
         ]
@@ -80,7 +82,7 @@ class SegmentNormalizationTests(unittest.TestCase):
         self.assertEqual(merge_adjacent_segments(segments), segments)
 
     def test_merges_duplicate_text_from_overlapping_chunks(self):
-        segments = [
+        segments: list[SubtitleSegment] = [
             {"start": 18.0, "end": 20.0, "text": "はい"},
             {"start": 18.2, "end": 20.5, "text": "はい"},
         ]
@@ -91,7 +93,7 @@ class SegmentNormalizationTests(unittest.TestCase):
         )
 
     def test_caps_duration_when_text_is_too_short_to_split(self):
-        segments = normalize_segments(
+        segments: list[SubtitleSegment] = normalize_segments(
             [{"start": 0.0, "end": 60.0, "text": "はい"}],
             max_segment_duration=20.0,
             max_segment_chars=45,
@@ -150,14 +152,14 @@ class MlxTranscriptionTests(unittest.TestCase):
                 return SimpleNamespace(sentences=[])
 
         fake_module = ModuleType("parakeet_mlx")
-        fake_module.DecodingConfig = DecodingConfig
-        fake_module.SentenceConfig = SentenceConfig
-        fake_module.from_pretrained = lambda _model_name: FakeModel()
+        setattr(fake_module, "DecodingConfig", DecodingConfig)
+        setattr(fake_module, "SentenceConfig", SentenceConfig)
+        setattr(fake_module, "from_pretrained", lambda _model_name: FakeModel())
 
         with patch.dict(modules, {"parakeet_mlx": fake_module}), patch("main.is_apple_silicon", return_value=True):
             transcribe_with_mlx(Path("audio.wav"), "mlx-community/model", 20.0, 2.0, 8.0, 45, 0.8)
 
-        decoding_config = captured["decoding_config"]
+        decoding_config = cast(Any, captured["decoding_config"])
         self.assertEqual(decoding_config.sentence.silence_gap, 0.8)
         self.assertEqual(decoding_config.sentence.max_duration, 8.0)
 

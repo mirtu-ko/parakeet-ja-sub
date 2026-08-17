@@ -15,7 +15,7 @@ from typing import TypedDict
 
 import pysrt
 from dotenv import load_dotenv
-from google import genai
+from google.genai import Client
 
 load_dotenv()
 
@@ -389,7 +389,11 @@ def transcribe_with_mlx(
         raise RuntimeError("MLX ASR models currently require Apple Silicon (macOS arm64).")
 
     try:
-        from parakeet_mlx import DecodingConfig, SentenceConfig, from_pretrained
+        from parakeet_mlx import (  # pyright: ignore[reportMissingImports]
+            DecodingConfig,
+            SentenceConfig,
+            from_pretrained,
+        )
     except ImportError as e:
         raise RuntimeError(
             "parakeet-mlx is not installed. Run `uv sync` on Apple Silicon to install the MLX backend."
@@ -436,8 +440,8 @@ def transcribe_with_nemo(
     if is_mlx_asr_model(model_name):
         raise RuntimeError("MLX models must be loaded with the MLX backend, not NeMo.")
 
-    import nemo.collections.asr as nemo_asr
-    import torch
+    import nemo.collections.asr as nemo_asr  # pyright: ignore[reportMissingImports]
+    import torch  # pyright: ignore[reportMissingImports]
 
     # Apple Silicon supports MPS; other machines fall back to CPU.
     if torch.backends.mps.is_available():
@@ -671,7 +675,7 @@ def describe_empty_translation_response(response: object) -> str:
     return "; ".join(details)
 
 
-def generate_translation(client: genai.Client, model_name: str, prompt: str) -> str:
+def generate_translation(client: Client, model_name: str, prompt: str) -> str:
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
@@ -747,7 +751,7 @@ def should_split_translation_batch(error: Exception) -> bool:
 
 
 def translate_batch(
-    client: genai.Client,
+    client: Client,
     model_name: str,
     texts: list[str],
     previous_request_time: float | None,
@@ -785,7 +789,7 @@ def translate_batch(
 
 
 def translate_batch_with_fallback(
-    client: genai.Client,
+    client: Client,
     model_name: str,
     texts: list[str],
     previous_request_time: float | None,
@@ -846,7 +850,7 @@ def translate_subtitles(
         raise SystemExit("--request-interval-seconds must be 0 or greater")
 
     model_name = get_gemini_model_name(model_name)
-    client = genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+    client = Client(api_key=api_key, http_options={"api_version": "v1"})
 
     subs = pysrt.open(str(input_path), encoding="utf-8")
     print(f"Translating {len(subs)} segments to Chinese with {model_name}...")

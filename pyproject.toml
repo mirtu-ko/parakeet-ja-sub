@@ -40,3 +40,5 @@ select = ["E", "F", "I", "UP"]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 include = ["main.py", "test_main.py"]
+venvPath = "."
+venv = ".venv"
