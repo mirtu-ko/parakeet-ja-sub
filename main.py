@@ -141,16 +141,15 @@ def split_audio(
             str(chunk_path),
             "-y",
         ])
-        keep_end = min(start + chunk_step, duration)
-        if chunk_end >= duration:
-            keep_end = duration
+        keep_start = start
+        keep_end = duration if chunk_end >= duration else min(start + chunk_step, duration)
 
         chunks.append(
             AudioChunk(
                 path=chunk_path,
                 start=start,
                 end=chunk_end,
-                keep_start=start,
+                keep_start=keep_start,
                 keep_end=keep_end,
             )
         )
@@ -171,8 +170,8 @@ def format_timestamp(seconds: float) -> str:
 
 
 def keep_segment_in_window(segment: SubtitleSegment, keep_start: float, keep_end: float) -> SubtitleSegment | None:
-    segment_start = segment["start"]
-    if keep_start <= segment_start < keep_end:
+    segment_midpoint = (segment["start"] + segment["end"]) / 2
+    if keep_start <= segment_midpoint < keep_end:
         return segment
     return None
 
@@ -192,7 +191,7 @@ def merge_adjacent_segments(
         current_text = segment["text"].strip()
         gap = segment["start"] - prev["end"]
 
-        if current_text == prev_text:
+        if gap <= merge_gap_seconds and current_text == prev_text:
             prev["end"] = max(prev["end"], segment["end"])
             continue
 
@@ -319,7 +318,11 @@ def normalize_segments(
     merged_segments = merge_adjacent_segments(segments)
     normalized_segments: list[SubtitleSegment] = []
     for segment in merged_segments:
-        normalized_segments.extend(split_long_segment(segment, max_segment_duration, max_segment_chars))
+        for split_segment in split_long_segment(segment, max_segment_duration, max_segment_chars):
+            if split_segment["end"] - split_segment["start"] > max_segment_duration:
+                split_segment = split_segment.copy()
+                split_segment["end"] = split_segment["start"] + max_segment_duration
+            normalized_segments.append(split_segment)
     return normalized_segments
 
 
@@ -333,6 +336,32 @@ def is_mlx_asr_model(model_name: str) -> bool:
 
 def get_asr_model_name(model_name: str | None = None) -> str:
     return model_name or os.getenv("PARAKEET_ASR_MODEL") or DEFAULT_ASR_MODEL
+
+
+def get_hypothesis_timestamps(hypothesis: object) -> dict:
+    # NeMo exposes decoded timestamps as `timestep`; some versions and model
+    # families use `timestamp` instead.
+    timestamp_dicts: list[dict] = []
+    for attribute_name in ("timestep", "timestamp"):
+        value = getattr(hypothesis, attribute_name, None)
+        if isinstance(value, dict):
+            timestamp_dicts.append(value)
+            if any(value.get(level) for level in ("char", "segment", "word")):
+                return value
+    return timestamp_dicts[0] if timestamp_dicts else {}
+
+
+def filter_chars_to_window(
+    chars: list[dict], time_offset: float, keep_start: float, keep_end: float
+) -> list[dict]:
+    filtered: list[dict] = []
+    for item in chars:
+        item_start = float(item["start"]) + time_offset
+        item_end = float(item["end"]) + time_offset
+        midpoint = (item_start + item_end) / 2
+        if keep_start <= midpoint < keep_end:
+            filtered.append(item)
+    return filtered
 
 
 def transcribe_with_mlx(
@@ -390,7 +419,6 @@ def transcribe_with_nemo(
 
     import nemo.collections.asr as nemo_asr
     import torch
-    from nemo.collections.asr.parts.mixins import TranscribeConfig
 
     # Apple Silicon supports MPS; other machines fall back to CPU.
     if torch.backends.mps.is_available():
@@ -416,19 +444,15 @@ def transcribe_with_nemo(
             output = asr_model.transcribe(
                 [str(chunk.path)],
                 timestamps=True,
-                override_config=TranscribeConfig(
-                    use_lhotse=False,
-                    batch_size=1,
-                    num_workers=0,
-                    timestamps=True,
-                    verbose=False,
-                ),
+                batch_size=1,
+                num_workers=0,
+                verbose=False,
             )
 
         for hypothesis in output:
-            ts = hypothesis.timestamp
+            ts = get_hypothesis_timestamps(hypothesis)
             if ts and ts.get("char"):
-                chars = ts["char"]
+                chars = filter_chars_to_window(ts["char"], chunk.start, chunk.keep_start, chunk.keep_end)
                 for seg in group_chars_into_segments(
                     chars,
                     chunk.start,
@@ -450,11 +474,10 @@ def transcribe_with_nemo(
                     if kept_seg is not None:
                         all_segments.append(kept_seg)
             elif hypothesis.text:
-                all_segments.append({
-                    "start": chunk.keep_start,
-                    "end": chunk.keep_end,
-                    "text": hypothesis.text,
-                })
+                raise RuntimeError(
+                    f"ASR model returned text without usable timestamps for chunk {i + 1} "
+                    f"({chunk.start:.3f}s-{chunk.end:.3f}s); refusing to create inaccurate subtitles."
+                )
 
     return normalize_segments(all_segments, max_segment_duration, max_segment_chars)
 
@@ -505,6 +528,8 @@ def group_chars_into_segments(
 
     for item in chars:
         text = "".join(item["char"])
+        if not text:
+            continue
         item_start = float(item["start"])
         item_end = float(item["end"])
 
@@ -779,8 +804,7 @@ def translate_batch_with_fallback(
             return left_translations + right_translations, previous_request_time
 
         if len(texts) == 1 and should_split_translation_batch(e):
-            print(f"    Warning: keeping original line after Gemini failure: {e}")
-            return [texts[0]], time.monotonic()
+            raise RuntimeError(f"Gemini could not translate subtitle line: {texts[0]!r}: {e}") from e
 
         raise
 
@@ -866,7 +890,10 @@ def main():
         "--max-segment-duration-seconds",
         type=float,
         default=DEFAULT_MAX_SEGMENT_DURATION_SECONDS,
-        help=f"Maximum subtitle segment duration after post-processing (default: {DEFAULT_MAX_SEGMENT_DURATION_SECONDS})",
+        help=(
+            "Maximum subtitle segment duration after post-processing "
+            f"(default: {DEFAULT_MAX_SEGMENT_DURATION_SECONDS})"
+        ),
     )
     parser.add_argument(
         "--max-segment-chars",

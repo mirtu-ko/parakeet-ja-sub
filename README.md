@@ -26,9 +26,13 @@
    cd Parakeet
    ```
 
-2. **安装依赖**:
+2. **安装依赖**（按运行平台选择 ASR 后端）:
    ```bash
-   uv sync
+   # Apple Silicon
+   uv sync --extra mlx
+
+   # 其他平台，或需要使用 NVIDIA NeMo
+   uv sync --extra nemo
    ```
 
 3. **配置 API Key**:
@@ -45,7 +49,7 @@
 ```bash
 uv run parakeet path/to/video.mp4
 ```
-- 执行后将生成 `video.srt` (日语) 和 `video.cn.srt` (中文)。
+- 执行后将生成 `video.jp.srt`（日语）和 `video.srt`（中文）。
 - 你可以使用 `-o` 指定输出路径，或使用 `--chunk-seconds` 调整切片长度。
 - Apple Silicon 默认会使用 `mlx-community/parakeet-tdt_ctc-0.6b-ja`，其他平台默认使用 `nvidia/parakeet-tdt_ctc-0.6b-ja`。
 - 如果偶尔出现“一大段几分钟都没切开”，可以这样收紧分段：
@@ -63,7 +67,7 @@ uv run parakeet path/to/video.mp4
 ```bash
 uv run parakeet-translate path/to/subtitle.srt
 ```
-- 默认生成 `subtitle.cn.srt`。
+- 输入名为 `subtitle.jp.srt` 时默认生成 `subtitle.srt`；其他名称会生成 `subtitle.translated.srt`。
 - 支持使用 `-o` 参数指定输出文件名。
 
 ## 参数说明
@@ -96,6 +100,14 @@ uv run parakeet-translate path/to/subtitle.srt
 - **ASR**: Parakeet JA (via MLX on Apple Silicon, NeMo elsewhere)
 - **Translation**: Google Gemini Flash Lite
 - **Tools**: `pysrt`, `nemo_toolkit`, `ffmpeg`, `uv`
+
+## 开发与检查
+
+```bash
+uv run python -m unittest -v
+uvx ruff check .
+uvx pyright
+```
 
 ## 许可证
 

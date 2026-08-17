@@ -3110,20 +3110,27 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },
-    { name = "nemo-toolkit", extra = ["asr"] },
-    { name = "parakeet-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "pysrt" },
     { name = "python-dotenv" },
+]
+
+[package.optional-dependencies]
+mlx = [
+    { name = "parakeet-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+]
+nemo = [
+    { name = "nemo-toolkit", extra = ["asr"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "google-genai", specifier = ">=2.6.0" },
-    { name = "nemo-toolkit", extras = ["asr"] },
-    { name = "parakeet-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "nemo-toolkit", extras = ["asr"], marker = "extra == 'nemo'" },
+    { name = "parakeet-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'" },
     { name = "pysrt" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
+provides-extras = ["mlx", "nemo"]
 
 [[package]]
 name = "parakeet-mlx"

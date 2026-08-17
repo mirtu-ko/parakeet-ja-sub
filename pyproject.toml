@@ -6,10 +6,16 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai>=2.6.0",
-    "parakeet-mlx; platform_system == 'Darwin' and platform_machine == 'arm64'",
-    "nemo_toolkit[asr]",
     "pysrt",
     "python-dotenv>=1.2.2",
+]
+
+[project.optional-dependencies]
+mlx = [
+    "parakeet-mlx; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+nemo = [
+    "nemo_toolkit[asr]",
 ]
 
 [project.scripts]
@@ -22,3 +28,15 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["main"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+include = ["main.py", "test_main.py"]
