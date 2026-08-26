@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import html
 import math
@@ -11,11 +13,13 @@ import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import pysrt
 from dotenv import load_dotenv
-from google.genai import Client
+
+if TYPE_CHECKING:
+    from google.genai import Client
 
 load_dotenv()
 
@@ -363,9 +367,7 @@ def get_hypothesis_timestamps(hypothesis: object) -> dict:
     return timestamp_dicts[0] if timestamp_dicts else {}
 
 
-def filter_chars_to_window(
-    chars: list[dict], time_offset: float, keep_start: float, keep_end: float
-) -> list[dict]:
+def filter_chars_to_window(chars: list[dict], time_offset: float, keep_start: float, keep_end: float) -> list[dict]:
     filtered: list[dict] = []
     for item in chars:
         item_start = float(item["start"]) + time_offset
@@ -443,8 +445,10 @@ def transcribe_with_nemo(
     import nemo.collections.asr as nemo_asr  # pyright: ignore[reportMissingImports]
     import torch  # pyright: ignore[reportMissingImports]
 
-    # Apple Silicon supports MPS; other machines fall back to CPU.
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print(f"Using CUDA for NeMo transcription: {torch.cuda.get_device_name(0)}")
+    elif torch.backends.mps.is_available():
         device = torch.device("mps")
         print("Apple Silicon detected, using MPS acceleration")
     else:
@@ -850,6 +854,8 @@ def translate_subtitles(
         raise SystemExit("--request-interval-seconds must be 0 or greater")
 
     model_name = get_gemini_model_name(model_name)
+    from google.genai import Client
+
     client = Client(api_key=api_key, http_options={"api_version": "v1"})
 
     subs = pysrt.open(str(input_path), encoding="utf-8")
@@ -915,8 +921,7 @@ def main():
         type=float,
         default=DEFAULT_MAX_SEGMENT_DURATION_SECONDS,
         help=(
-            "Maximum subtitle segment duration after post-processing "
-            f"(default: {DEFAULT_MAX_SEGMENT_DURATION_SECONDS})"
+            f"Maximum subtitle segment duration after post-processing (default: {DEFAULT_MAX_SEGMENT_DURATION_SECONDS})"
         ),
     )
     parser.add_argument(

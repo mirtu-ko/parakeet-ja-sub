@@ -16,6 +16,7 @@ mlx = [
 ]
 nemo = [
     "nemo_toolkit[asr]",
+    "torch>=2.9.1",
 ]
 
 [project.scripts]
@@ -42,3 +43,11 @@ typeCheckingMode = "basic"
 include = ["main.py", "test_main.py"]
 venvPath = "."
 venv = ".venv"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
