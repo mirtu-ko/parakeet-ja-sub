@@ -50,6 +50,11 @@
 uv run parakeet path/to/video.mp4
 ```
 - 执行后将生成 `video.jp.srt`（日语）和 `video.srt`（中文）。
+- 也可以直接传入目录，工具会按文件名顺序逐个处理目录下的常见视频文件：
+  ```bash
+  uv run parakeet path/to/videos
+  ```
+  字幕默认保存在该目录；使用 `-o` 可指定字幕输出目录。单个视频失败时会继续处理其余视频，最后统一报告失败文件。
 - 你可以使用 `-o` 指定输出路径，或使用 `--chunk-seconds` 调整切片长度。
 - Apple Silicon 默认会使用 `mlx-community/parakeet-tdt_ctc-0.6b-ja`，其他平台默认使用 `nvidia/parakeet-tdt_ctc-0.6b-ja`。
 - 如果偶尔出现“一大段几分钟都没切开”，可以这样收紧分段：
@@ -73,8 +78,8 @@ uv run parakeet-translate path/to/subtitle.srt
 ## 参数说明
 
 ### `parakeet` (转写+翻译)
-- `input`: 输入视频路径（必填）。
-- `-o`, `--output`: 输出 SRT 路径（可选）。
+- `input`: 输入视频路径或目录（必填）。目录模式处理 `.avi`、`.m4v`、`.mkv`、`.mov`、`.mp4`、`.ts`、`.webm` 文件。
+- `-o`, `--output`: 单文件模式下为输出 SRT 路径；目录模式下为输出目录（可选）。
 - `--chunk-seconds`: 切片时长，默认 20 秒。
 - `--chunk-overlap-seconds`: 切片重叠时长，默认 2 秒。
 - `--max-segment-duration-seconds`: 单条字幕最大时长，默认 20 秒。

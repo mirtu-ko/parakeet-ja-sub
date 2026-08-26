@@ -40,6 +40,7 @@ DEFAULT_MAX_SEGMENT_DURATION_SECONDS = 20.0
 DEFAULT_MAX_SEGMENT_CHARS = 45
 DEFAULT_SEGMENT_SILENCE_GAP_SECONDS = 0.8
 MIN_SPLIT_SEGMENT_CHARS = 4
+VIDEO_EXTENSIONS = {".avi", ".m4v", ".mkv", ".mov", ".mp4", ".ts", ".webm"}
 AUDIO_CODEC = "pcm_s16le"
 AUDIO_SAMPLE_RATE = "16000"
 AUDIO_CHANNELS = "1"
@@ -894,6 +895,51 @@ def translate_subtitles(
     print(f"Translated subtitles saved to {output_path}")
 
 
+def get_video_files(input_dir: Path) -> list[Path]:
+    return sorted(
+        (path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS),
+        key=lambda path: path.name.casefold(),
+    )
+
+
+def process_video(input_path: Path, args: argparse.Namespace, output_path: Path | None = None) -> None:
+    asr_model_name = get_asr_model_name(args.asr_model)
+    output_path = output_path or default_japanese_srt_path(input_path)
+    audio_path = input_path.with_suffix(".wav")
+
+    if audio_path.exists():
+        print(f"Using existing audio file: {audio_path}")
+    else:
+        print(f"Extracting audio from {input_path}...")
+        extract_audio(input_path, audio_path)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        print(f"Using temporary directory: {tmp_dir}")
+        print(f"Transcribing with {asr_model_name}...")
+        segments = transcribe(
+            audio_path,
+            Path(tmp_dir),
+            asr_model_name,
+            chunk_seconds=args.chunk_seconds,
+            chunk_overlap_seconds=args.chunk_overlap_seconds,
+            max_segment_duration=args.max_segment_duration_seconds,
+            max_segment_chars=args.max_segment_chars,
+            segment_silence_gap_seconds=args.segment_silence_gap_seconds,
+        )
+
+    print(f"Writing {len(segments)} subtitle segments to {output_path}")
+    write_srt(segments, output_path)
+
+    output_cn_path = default_chinese_srt_path(output_path)
+    translate_subtitles(
+        output_path,
+        output_cn_path,
+        args.translation_model,
+        args.translation_batch_size,
+        args.translation_request_interval_seconds,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Transcribe Japanese audio from MP4 to SRT subtitles")
     parser.add_argument("input", type=Path, help="Input MP4 video file")
@@ -965,6 +1011,8 @@ def main():
 
     if not args.input.exists():
         raise SystemExit(f"Input file not found: {args.input}")
+    if args.input.is_dir() and args.output is not None and args.output.exists() and not args.output.is_dir():
+        raise SystemExit("--output must be a directory when input is a directory")
     if args.chunk_seconds <= 0:
         raise SystemExit("--chunk-seconds must be greater than 0")
     if args.chunk_overlap_seconds < 0:
@@ -978,42 +1026,30 @@ def main():
     if args.segment_silence_gap_seconds < 0:
         raise SystemExit("--segment-silence-gap-seconds must be 0 or greater")
 
-    asr_model_name = get_asr_model_name(args.asr_model)
-    output_path = args.output or default_japanese_srt_path(args.input)
-    audio_path = args.input.with_suffix(".wav")
+    if args.input.is_file():
+        process_video(args.input, args, args.output)
+        print("Done.")
+        return
 
-    if audio_path.exists():
-        print(f"Using existing audio file: {audio_path}")
-    else:
-        print(f"Extracting audio from {args.input}...")
-        extract_audio(args.input, audio_path)
+    video_files = get_video_files(args.input)
+    if not video_files:
+        raise SystemExit(f"No supported video files found in directory: {args.input}")
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        print(f"Using temporary directory: {tmp_dir}")
-        print(f"Transcribing with {asr_model_name}...")
-        segments = transcribe(
-            audio_path,
-            Path(tmp_dir),
-            asr_model_name,
-            chunk_seconds=args.chunk_seconds,
-            chunk_overlap_seconds=args.chunk_overlap_seconds,
-            max_segment_duration=args.max_segment_duration_seconds,
-            max_segment_chars=args.max_segment_chars,
-            segment_silence_gap_seconds=args.segment_silence_gap_seconds,
-        )
+    output_dir = args.output or args.input
+    print(f"Found {len(video_files)} video file(s) in {args.input}")
+    failed_files: list[Path] = []
+    for index, video_path in enumerate(video_files, 1):
+        print(f"\n[{index}/{len(video_files)}] Processing {video_path.name}")
+        output_path = output_dir / default_japanese_srt_path(video_path).name
+        try:
+            process_video(video_path, args, output_path)
+        except Exception as e:
+            failed_files.append(video_path)
+            print(f"Error processing {video_path}: {e}")
 
-    print(f"Writing {len(segments)} subtitle segments to {output_path}")
-    write_srt(segments, output_path)
-
-    # Translate to Chinese
-    output_cn_path = default_chinese_srt_path(output_path)
-    translate_subtitles(
-        output_path,
-        output_cn_path,
-        args.translation_model,
-        args.translation_batch_size,
-        args.translation_request_interval_seconds,
-    )
+    if failed_files:
+        failed_names = ", ".join(path.name for path in failed_files)
+        raise SystemExit(f"Processing failed for {len(failed_files)} file(s): {failed_names}")
 
     print("Done.")
 
