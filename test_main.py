@@ -10,6 +10,7 @@ from main import (
     SubtitleSegment,
     filter_chars_to_window,
     get_hypothesis_timestamps,
+    get_video_files,
     group_chars_into_segments,
     merge_adjacent_segments,
     normalize_segments,
@@ -17,6 +18,21 @@ from main import (
     transcribe_with_mlx,
     translate_batch_with_fallback,
 )
+
+
+class VideoDiscoveryTests(unittest.TestCase):
+    def test_returns_supported_video_files_sorted_and_ignores_other_entries(self):
+        with TemporaryDirectory() as tmp_dir:
+            input_dir = Path(tmp_dir)
+            (input_dir / "zeta.MP4").touch()
+            (input_dir / "Alpha.mkv").touch()
+            (input_dir / "notes.srt").touch()
+            (input_dir / "nested").mkdir()
+
+            self.assertEqual(
+                [path.name for path in get_video_files(input_dir)],
+                ["Alpha.mkv", "zeta.MP4"],
+            )
 
 
 class GetHypothesisTimestampsTests(unittest.TestCase):
