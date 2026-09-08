@@ -1,14 +1,14 @@
 # Parakeet Subtitle Transcriber & Translator
 
-这是一个基于 Parakeet 日语模型开发的语音转字幕工具，并集成了 Google Gemini API 进行高质量的中文字幕翻译。
+这是一个自用的基于 Parakeet 日语模型的语音转字幕工具，支持 Google Gemini API 进行中文字幕翻译。
 
 ## 功能特点
 
 - **高精度识别**：默认使用日语优化的 Parakeet 模型；在 Apple Silicon 上优先走 MLX 后端。
 - **自动切片**：支持长视频/音频自动切片处理，避免显存溢出或处理超时。
 - **更稳的字幕分段**：在有字符级时间戳时支持按静音停顿切分，并对过长字幕按标点、时长、字数自动拆分。
-- **Gemini 翻译**：自动将生成的日语字幕翻译成自然、流畅的简体中文。
-- **独立工具**：提供独立的命令行工具，可对已有的 SRT 文件进行翻译。
+- **Gemini 翻译**：自动将生成的日语字幕翻译成简体中文。
+- **独立工具**：提供独立的命令行工具。
 
 ## 安装指南
 
@@ -52,7 +52,7 @@ uv run parakeet path/to/video.mp4
 - 执行后将生成 `video.jp.srt`（日语）和 `video.srt`（中文）。
 - 你可以使用 `-o` 指定输出路径，或使用 `--chunk-seconds` 调整切片长度。
 - Apple Silicon 默认会使用 `mlx-community/parakeet-tdt_ctc-0.6b-ja`，其他平台默认使用 `nvidia/parakeet-tdt_ctc-0.6b-ja`。
-- 如果偶尔出现“一大段几分钟都没切开”，可以这样收紧分段：
+- 如果出现“一大段几分钟都没切开”，可收紧分段：
   ```bash
   uv run parakeet path/to/video.mp4 \
     --chunk-seconds 15 \
